@@ -1,1 +1,54 @@
+name: Oracle capacity retry
 
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+concurrency:
+  group: oracle-capacity-retry
+  cancel-in-progress: false
+
+jobs:
+  retry-apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Apply
+        shell: bash
+        run: |
+          set +e
+          terraform apply -auto-approve -input=false 2>&1 | tee apply.log
+          code=${PIPESTATUS[0]}
+
+          if [ $code -eq 0 ]; then
+            echo "Terraform apply succeeded."
+            exit 0
+          fi
+
+          if grep -q "Out of host capacity" apply.log; then
+            echo "Still out of capacity. Next scheduled run will retry."
+            exit 0
+          fi
+
+          exit $code
