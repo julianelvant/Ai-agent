@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.3.0"
+  required_version = ">= 1.12.0"
 
   required_providers {
     oci = {
@@ -25,16 +25,55 @@ resource "oci_core_instance" "generated_oci_core_instance" {
     is_management_disabled = false
     is_monitoring_disabled = false
 
-    plugins_config { desired_state = "DISABLED" name = "Vulnerability Scanning" }
-    plugins_config { desired_state = "DISABLED" name = "Management Agent" }
-    plugins_config { desired_state = "ENABLED"  name = "Custom Logs Monitoring" }
-    plugins_config { desired_state = "DISABLED" name = "Compute RDMA GPU Monitoring" }
-    plugins_config { desired_state = "ENABLED"  name = "Compute Instance Monitoring" }
-    plugins_config { desired_state = "DISABLED" name = "Compute HPC RDMA Auto-Configuration" }
-    plugins_config { desired_state = "DISABLED" name = "Compute HPC RDMA Authentication" }
-    plugins_config { desired_state = "ENABLED"  name = "Cloud Guard Workload Protection" }
-    plugins_config { desired_state = "DISABLED" name = "Block Volume Management" }
-    plugins_config { desired_state = "DISABLED" name = "Bastion" }
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Vulnerability Scanning"
+    }
+
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Management Agent"
+    }
+
+    plugins_config {
+      desired_state = "ENABLED"
+      name          = "Custom Logs Monitoring"
+    }
+
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Compute RDMA GPU Monitoring"
+    }
+
+    plugins_config {
+      desired_state = "ENABLED"
+      name          = "Compute Instance Monitoring"
+    }
+
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Compute HPC RDMA Auto-Configuration"
+    }
+
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Compute HPC RDMA Authentication"
+    }
+
+    plugins_config {
+      desired_state = "ENABLED"
+      name          = "Cloud Guard Workload Protection"
+    }
+
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Block Volume Management"
+    }
+
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Bastion"
+    }
   }
 
   availability_config {
