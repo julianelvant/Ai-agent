@@ -28,13 +28,13 @@ jobs:
       - name: Restore working OCI config and key
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p ~/.oci
 
           echo '${{ secrets.OCI_PRIVATE_KEY_B64 }}' | base64 -d > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
 
           echo '${{ secrets.OCI_CONFIG_B64 }}' | base64 -d > ~/.oci/config
-
           sed -i 's|^key_file=.*|key_file=/home/runner/.oci/oci_api_key.pem|' ~/.oci/config
           chmod 600 ~/.oci/config
 
@@ -43,20 +43,23 @@ jobs:
       - name: Verify key matches fingerprint from config
         shell: bash
         run: |
+          set -euo pipefail
           CONFIG_FP="$(awk -F= '/^fingerprint=/{print $2}' ~/.oci/config | tr -d '\r\n[:space:]')"
           DERIVED_FP="$(openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem 2>/dev/null | openssl md5 -c | awk '{print $2}')"
 
           if [ "$DERIVED_FP" != "$CONFIG_FP" ]; then
             echo "Fingerprint mismatch."
             echo "Derived: $DERIVED_FP"
-            echo "Config:   $CONFIG_FP"
+            echo "Config: $CONFIG_FP"
             exit 1
           fi
 
           echo "Fingerprint matches key."
 
       - name: Verify OCI auth works
+        shell: bash
         run: |
+          set -euo pipefail
           oci os ns get
           oci os bucket get -ns axz5kerlx4p6 -bn tf-state
 
@@ -114,7 +117,7 @@ jobs:
             exit 0
           fi
 
-          if grep -q "Out of host capacity" launch.log; then
+          if grep -qi "Out of host capacity" launch.log || grep -qi "out of capacity" launch.log; then
             echo "Still out of capacity. Next scheduled run will retry."
             exit 0
           fi
