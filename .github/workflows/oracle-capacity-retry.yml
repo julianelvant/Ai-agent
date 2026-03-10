@@ -23,7 +23,7 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install oci-cli
 
-      - name: Create OCI config from secrets
+      - name: Prepare OCI CLI auth
         shell: bash
         run: |
           mkdir -p ~/.oci
@@ -31,21 +31,36 @@ jobs:
           echo '${{ secrets.OCI_PRIVATE_KEY_B64 }}' | base64 -d > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
 
-          USER_OCID="$(printf '%s' '${{ secrets.OCI_USER_OCID }}' | tr -d '\r\n')"
-          TENANCY_OCID="$(printf '%s' '${{ secrets.OCI_TENANCY_OCID }}' | tr -d '\r\n')"
-          FINGERPRINT="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n')"
-          REGION="$(printf '%s' '${{ secrets.OCI_REGION }}' | tr -d '\r\n')"
+          USER_OCID="$(printf '%s' '${{ secrets.OCI_USER_OCID }}' | tr -d '\r\n[:space:]')"
+          TENANCY_OCID="$(printf '%s' '${{ secrets.OCI_TENANCY_OCID }}' | tr -d '\r\n[:space:]')"
+          FINGERPRINT="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n[:space:]')"
+          REGION="$(printf '%s' '${{ secrets.OCI_REGION }}' | tr -d '\r\n[:space:]')"
 
-          cat > ~/.oci/config <<EOF
-          [DEFAULT]
-          user=${USER_OCID}
-          fingerprint=${FINGERPRINT}
-          tenancy=${TENANCY_OCID}
-          region=${REGION}
-          key_file=/home/runner/.oci/oci_api_key.pem
-          EOF
+          {
+            echo "OCI_CLI_AUTH=api_key"
+            echo "OCI_CLI_USER=$USER_OCID"
+            echo "OCI_CLI_TENANCY=$TENANCY_OCID"
+            echo "OCI_CLI_FINGERPRINT=$FINGERPRINT"
+            echo "OCI_CLI_REGION=$REGION"
+            echo "OCI_CLI_KEY_FILE=/home/runner/.oci/oci_api_key.pem"
+          } >> "$GITHUB_ENV"
 
-          chmod 600 ~/.oci/config
+      - name: Verify key matches fingerprint
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssl
+          DERIVED_FP="$(openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem 2>/dev/null | openssl md5 -c | awk '{print $2}')"
+          EXPECTED_FP="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n[:space:]')"
+
+          if [ "$DERIVED_FP" != "$EXPECTED_FP" ]; then
+            echo "Fingerprint mismatch."
+            echo "Derived: $DERIVED_FP"
+            echo "Expected: $EXPECTED_FP"
+            exit 1
+          fi
+
+          echo "Fingerprint matches private key."
 
       - name: Verify OCI auth works
         run: |
@@ -58,7 +73,7 @@ jobs:
         run: |
           EXISTING_ID=$(
             oci compute instance list \
-              --compartment-id "${{ secrets.OCI_TENANCY_OCID }}" \
+              --compartment-id "$OCI_CLI_TENANCY" \
               --availability-domain "cHOj:ME-DUBAI-1-AD-1" \
               --display-name "instance-20260309-0046" \
               --all --output json | \
@@ -81,7 +96,7 @@ jobs:
 
           oci compute instance launch \
             --availability-domain "cHOj:ME-DUBAI-1-AD-1" \
-            --compartment-id "${{ secrets.OCI_TENANCY_OCID }}" \
+            --compartment-id "$OCI_CLI_TENANCY" \
             --subnet-id "ocid1.subnet.oc1.me-dubai-1.aaaaaaaav6dpwb2wgxvjctydrzbo46jspe6hxc5nnvuxcfal63uu2dgmznda" \
             --display-name "instance-20260309-0046" \
             --shape "VM.Standard.A1.Flex" \
