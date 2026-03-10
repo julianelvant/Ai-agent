@@ -33,29 +33,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y openssl
 
-      - name: Create OCI config from secrets
+      - name: Create OCI private key from base64 secret
         shell: bash
         run: |
           mkdir -p ~/.oci
-
           echo '${{ secrets.OCI_PRIVATE_KEY_B64 }}' | base64 -d > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
-
-          USER_OCID="$(printf '%s' '${{ secrets.OCI_USER_OCID }}' | tr -d '\r\n')"
-          TENANCY_OCID="$(printf '%s' '${{ secrets.OCI_TENANCY_OCID }}' | tr -d '\r\n')"
-          FINGERPRINT="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n')"
-          REGION="$(printf '%s' '${{ secrets.OCI_REGION }}' | tr -d '\r\n')"
-
-          cat > ~/.oci/config <<EOF
-          [DEFAULT]
-          user=${USER_OCID}
-          fingerprint=${FINGERPRINT}
-          tenancy=${TENANCY_OCID}
-          region=${REGION}
-          key_file=/home/runner/.oci/oci_api_key.pem
-          EOF
-
-          chmod 600 ~/.oci/config
 
       - name: Verify private key matches fingerprint
         shell: bash
@@ -73,11 +56,23 @@ jobs:
           echo "Fingerprint matches private key."
 
       - name: Terraform Init
+        env:
+          TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_private_key_path: /home/runner/.oci/oci_api_key.pem
+          TF_VAR_region: ${{ secrets.OCI_REGION }}
         run: terraform init -input=false
 
       - name: Terraform Apply
         id: apply
         shell: bash
+        env:
+          TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_private_key_path: /home/runner/.oci/oci_api_key.pem
+          TF_VAR_region: ${{ secrets.OCI_REGION }}
         run: |
           set +e
           terraform apply -auto-approve -input=false 2>&1 | tee apply.log
