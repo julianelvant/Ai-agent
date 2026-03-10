@@ -1,91 +1,111 @@
-name: Oracle capacity retry
+terraform {
+  required_version = ">= 1.12.0"
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "*/5 * * * *"
+  required_providers {
+    oci = {
+      source = "oracle/oci"
+    }
+  }
+}
 
-concurrency:
-  group: oracle-capacity-retry
-  cancel-in-progress: false
+provider "oci" {
+  auth                = "APIKey"
+  config_file_profile = "DEFAULT"
+}
 
-jobs:
-  retry-apply:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+resource "oci_core_instance" "generated_oci_core_instance" {
+  agent_config {
+    is_management_disabled = false
+    is_monitoring_disabled = false
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Vulnerability Scanning"
+    }
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.14.6
-          terraform_wrapper: false
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Management Agent"
+    }
 
-      - name: Ensure OpenSSL is available
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y openssl
+    plugins_config {
+      desired_state = "ENABLED"
+      name          = "Custom Logs Monitoring"
+    }
 
-      - name: Create OCI config from secrets
-        shell: bash
-        run: |
-          mkdir -p ~/.oci
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Compute RDMA GPU Monitoring"
+    }
 
-          echo '${{ secrets.OCI_PRIVATE_KEY_B64 }}' | base64 -d > ~/.oci/oci_api_key.pem
-          chmod 600 ~/.oci/oci_api_key.pem
+    plugins_config {
+      desired_state = "ENABLED"
+      name          = "Compute Instance Monitoring"
+    }
 
-          USER_OCID="$(printf '%s' '${{ secrets.OCI_USER_OCID }}' | tr -d '\r\n')"
-          TENANCY_OCID="$(printf '%s' '${{ secrets.OCI_TENANCY_OCID }}' | tr -d '\r\n')"
-          FINGERPRINT="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n')"
-          REGION="$(printf '%s' '${{ secrets.OCI_REGION }}' | tr -d '\r\n')"
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Compute HPC RDMA Auto-Configuration"
+    }
 
-          cat > ~/.oci/config <<EOF
-          [DEFAULT]
-          user=${USER_OCID}
-          fingerprint=${FINGERPRINT}
-          tenancy=${TENANCY_OCID}
-          region=${REGION}
-          key_file=/home/runner/.oci/oci_api_key.pem
-          EOF
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Compute HPC RDMA Authentication"
+    }
 
-          chmod 600 ~/.oci/config
+    plugins_config {
+      desired_state = "ENABLED"
+      name          = "Cloud Guard Workload Protection"
+    }
 
-      - name: Verify private key matches fingerprint
-        shell: bash
-        run: |
-          EXPECTED_FP="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n')"
-          DERIVED_FP="$(openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem 2>/dev/null | openssl md5 -c | awk '{print $2}')"
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Block Volume Management"
+    }
 
-          if [ "$DERIVED_FP" != "$EXPECTED_FP" ]; then
-            echo "Fingerprint mismatch."
-            echo "Derived: $DERIVED_FP"
-            echo "Expected: $EXPECTED_FP"
-            exit 1
-          fi
+    plugins_config {
+      desired_state = "DISABLED"
+      name          = "Bastion"
+    }
+  }
 
-          echo "Fingerprint matches private key."
+  availability_config {
+    recovery_action = "RESTORE_INSTANCE"
+  }
 
-      - name: Terraform Init
-        run: terraform init -input=false -reconfigure
+  availability_domain = "cHOj:ME-DUBAI-1-AD-1"
+  compartment_id      = "ocid1.tenancy.oc1..aaaaaaaawwr6fxvsl3hrne2hpposrdgm2abaaanfgwciqcziuxlktq7hzleq"
 
-      - name: Terraform Apply
-        shell: bash
-        run: |
-          set +e
-          terraform apply -auto-approve -input=false 2>&1 | tee apply.log
-          code=${PIPESTATUS[0]}
+  create_vnic_details {
+    assign_ipv6ip             = false
+    assign_private_dns_record = true
+    assign_public_ip          = true
+    subnet_id                 = "ocid1.subnet.oc1.me-dubai-1.aaaaaaaav6dpwb2wgxvjctydrzbo46jspe6hxc5nnvuxcfal63uu2dgmznda"
+  }
 
-          if [ $code -eq 0 ]; then
-            echo "Terraform apply succeeded."
-            exit 0
-          fi
+  display_name = "instance-20260309-0046"
 
-          if grep -q "Out of host capacity" apply.log; then
-            echo "Still out of capacity. Next scheduled run will retry."
-            exit 0
-          fi
+  instance_options {
+    are_legacy_imds_endpoints_disabled = false
+  }
 
-          exit $code
+  is_pv_encryption_in_transit_enabled = true
+
+  metadata = {
+    ssh_authorized_keys = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDQWOd3NbeBfSaoMI+zg79jWnZc9jaq+xBvcYrzZfcI81iyffF60H8Qp5f0TnsxyPNGTcrVmnSU8ZDeisQg3StGIOo4mn0jz2pg7zmfWoqGcr9Bup+2GVM0x0aKDtY1EV0QLev9vlzZn6HkM8EaKezLlxN6R41wuUyaDz0U28qFS1EPwh+YvZn5fH60PRpuJaUKd3ImtouEz6dpqFvyPNdaImFAw3BvMa0JTCa71OorsDdKqSVAjcseBGciF5DSgEF5mHy7oT4TsijFeo8ys7Wrnh4uJbMSDx9rTykHLap21tluZHBA4AOJHv+i16NsNP+Y338Gc7npGnyazdUfv6FR ssh-key-2026-03-08"
+  }
+
+  shape = "VM.Standard.A1.Flex"
+
+  shape_config {
+    ocpus         = 2
+    memory_in_gbs = 12
+  }
+
+  source_details {
+    boot_volume_size_in_gbs = 50
+    boot_volume_vpus_per_gb = 10
+    source_id               = "ocid1.image.oc1.me-dubai-1.aaaaaaaab352mbi4vcyymzs4ccln576k34khc357fk2hlaqx3cuzjclgkoea"
+    source_type             = "image"
+  }
+}
