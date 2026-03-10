@@ -1,111 +1,115 @@
-terraform {
-  required_version = ">= 1.12.0"
+name: Oracle capacity retry
 
-  required_providers {
-    oci = {
-      source = "oracle/oci"
-    }
-  }
-}
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
-provider "oci" {
-  auth                = "APIKey"
-  config_file_profile = "DEFAULT"
-}
+concurrency:
+  group: oracle-capacity-retry
+  cancel-in-progress: false
 
-resource "oci_core_instance" "generated_oci_core_instance" {
-  agent_config {
-    is_management_disabled = false
-    is_monitoring_disabled = false
+jobs:
+  retry-apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
 
-    plugins_config {
-      desired_state = "DISABLED"
-      name          = "Vulnerability Scanning"
-    }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    plugins_config {
-      desired_state = "DISABLED"
-      name          = "Management Agent"
-    }
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.6
+          terraform_wrapper: false
 
-    plugins_config {
-      desired_state = "ENABLED"
-      name          = "Custom Logs Monitoring"
-    }
+      - name: Ensure OpenSSL is available
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssl
 
-    plugins_config {
-      desired_state = "DISABLED"
-      name          = "Compute RDMA GPU Monitoring"
-    }
+      - name: Create OCI config from secrets
+        shell: bash
+        run: |
+          mkdir -p ~/.oci
 
-    plugins_config {
-      desired_state = "ENABLED"
-      name          = "Compute Instance Monitoring"
-    }
+          echo '${{ secrets.OCI_PRIVATE_KEY_B64 }}' | base64 -d > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
 
-    plugins_config {
-      desired_state = "DISABLED"
-      name          = "Compute HPC RDMA Auto-Configuration"
-    }
+          USER_OCID="$(printf '%s' '${{ secrets.OCI_USER_OCID }}' | tr -d '\r\n')"
+          TENANCY_OCID="$(printf '%s' '${{ secrets.OCI_TENANCY_OCID }}' | tr -d '\r\n')"
+          FINGERPRINT="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n')"
+          REGION="$(printf '%s' '${{ secrets.OCI_REGION }}' | tr -d '\r\n')"
 
-    plugins_config {
-      desired_state = "DISABLED"
-      name          = "Compute HPC RDMA Authentication"
-    }
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${USER_OCID}
+          fingerprint=${FINGERPRINT}
+          tenancy=${TENANCY_OCID}
+          region=${REGION}
+          key_file=/home/runner/.oci/oci_api_key.pem
+          EOF
 
-    plugins_config {
-      desired_state = "ENABLED"
-      name          = "Cloud Guard Workload Protection"
-    }
+          chmod 600 ~/.oci/config
 
-    plugins_config {
-      desired_state = "DISABLED"
-      name          = "Block Volume Management"
-    }
+      - name: Verify private key matches fingerprint
+        shell: bash
+        run: |
+          EXPECTED_FP="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n')"
+          DERIVED_FP="$(openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem 2>/dev/null | openssl md5 -c | awk '{print $2}')"
 
-    plugins_config {
-      desired_state = "DISABLED"
-      name          = "Bastion"
-    }
-  }
+          if [ "$DERIVED_FP" != "$EXPECTED_FP" ]; then
+            echo "Fingerprint mismatch."
+            echo "Derived: $DERIVED_FP"
+            echo "Expected: $EXPECTED_FP"
+            exit 1
+          fi
 
-  availability_config {
-    recovery_action = "RESTORE_INSTANCE"
-  }
+          echo "Fingerprint matches private key."
 
-  availability_domain = "cHOj:ME-DUBAI-1-AD-1"
-  compartment_id      = "ocid1.tenancy.oc1..aaaaaaaawwr6fxvsl3hrne2hpposrdgm2abaaanfgwciqcziuxlktq7hzleq"
+      - name: Terraform Init
+        run: terraform init -input=false
 
-  create_vnic_details {
-    assign_ipv6ip             = false
-    assign_private_dns_record = true
-    assign_public_ip          = true
-    subnet_id                 = "ocid1.subnet.oc1.me-dubai-1.aaaaaaaav6dpwb2wgxvjctydrzbo46jspe6hxc5nnvuxcfal63uu2dgmznda"
-  }
+      - name: Terraform Apply
+        id: apply
+        shell: bash
+        run: |
+          set +e
+          terraform apply -auto-approve -input=false 2>&1 | tee apply.log
+          code=${PIPESTATUS[0]}
 
-  display_name = "instance-20260309-0046"
+          if [ $code -eq 0 ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            exit 0
+          fi
 
-  instance_options {
-    are_legacy_imds_endpoints_disabled = false
-  }
+          if grep -q "Out of host capacity" apply.log; then
+            echo "status=capacity" >> $GITHUB_OUTPUT
+            echo "Still out of capacity. Next scheduled run will retry."
+            exit 0
+          fi
 
-  is_pv_encryption_in_transit_enabled = true
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit $code
 
-  metadata = {
-    ssh_authorized_keys = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDQWOd3NbeBfSaoMI+zg79jWnZc9jaq+xBvcYrzZfcI81iyffF60H8Qp5f0TnsxyPNGTcrVmnSU8ZDeisQg3StGIOo4mn0jz2pg7zmfWoqGcr9Bup+2GVM0x0aKDtY1EV0QLev9vlzZn6HkM8EaKezLlxN6R41wuUyaDz0U28qFS1EPwh+YvZn5fH60PRpuJaUKd3ImtouEz6dpqFvyPNdaImFAw3BvMa0JTCa71OorsDdKqSVAjcseBGciF5DSgEF5mHy7oT4TsijFeo8ys7Wrnh4uJbMSDx9rTykHLap21tluZHBA4AOJHv+i16NsNP+Y338Gc7npGnyazdUfv6FR ssh-key-2026-03-08"
-  }
+      - name: Commit Terraform state
+        if: steps.apply.outputs.status == 'success'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-  shape = "VM.Standard.A1.Flex"
+          git add terraform.tfstate terraform.tfstate.backup .terraform.lock.hcl || true
 
-  shape_config {
-    ocpus         = 2
-    memory_in_gbs = 12
-  }
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+            exit 0
+          fi
 
-  source_details {
-    boot_volume_size_in_gbs = 50
-    boot_volume_vpus_per_gb = 10
-    source_id               = "ocid1.image.oc1.me-dubai-1.aaaaaaaab352mbi4vcyymzs4ccln576k34khc357fk2hlaqx3cuzjclgkoea"
-    source_type             = "image"
-  }
-}
+          git commit -m "Update terraform state after successful OCI apply"
+          git push
