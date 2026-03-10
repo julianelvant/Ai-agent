@@ -64,23 +64,24 @@ jobs:
         id: exists
         shell: bash
         run: |
+          set -euo pipefail
+
           COMPARTMENT_ID="$(awk -F= '/^tenancy=/{print $2}' ~/.oci/config | tr -d '\r\n[:space:]')"
 
-          EXISTING_ID=$(
-            oci compute instance list \
-              --compartment-id "$COMPARTMENT_ID" \
-              --availability-domain "cHOj:ME-DUBAI-1-AD-1" \
-              --display-name "instance-20260309-0046" \
-              --all --output json | \
-            python3 -c "import sys, json; d=json.load(sys.stdin).get('data', []); print(next((x['id'] for x in d if x.get('lifecycle-state') != 'TERMINATED'), ''))"
-          )
+          EXISTING_ID="$(oci compute instance list \
+            --compartment-id "$COMPARTMENT_ID" \
+            --availability-domain "cHOj:ME-DUBAI-1-AD-1" \
+            --display-name "instance-20260309-0046" \
+            --all \
+            --query "data[?\"lifecycle-state\"!='TERMINATED'].id | [0]" \
+            --raw-output)"
 
-          if [ -n "$EXISTING_ID" ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Existing instance found: $EXISTING_ID"
-          else
+          if [ "$EXISTING_ID" = "null" ] || [ -z "$EXISTING_ID" ]; then
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "No existing instance found."
+          else
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Existing instance found: $EXISTING_ID"
           fi
 
       - name: Launch instance
