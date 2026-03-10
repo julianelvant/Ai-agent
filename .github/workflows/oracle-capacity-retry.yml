@@ -3,7 +3,7 @@ name: Oracle capacity retry
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
 
 concurrency:
   group: oracle-capacity-retry
@@ -18,14 +18,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install OCI CLI and OpenSSL
+      - name: Install OCI CLI and tools
+        id: install
+        shell: bash
         run: |
+          set -euo pipefail
           python3 -m pip install --upgrade pip
           python3 -m pip install oci-cli
           sudo apt-get update
-          sudo apt-get install -y openssl
+          sudo apt-get install -y openssl curl jq
 
       - name: Restore working OCI config and key
+        id: restore
         shell: bash
         run: |
           set -euo pipefail
@@ -41,22 +45,25 @@ jobs:
           echo "OCI_CLI_CONFIG_FILE=/home/runner/.oci/config" >> "$GITHUB_ENV"
 
       - name: Verify key matches fingerprint from config
+        id: fingerprint
         shell: bash
         run: |
           set -euo pipefail
+
           CONFIG_FP="$(awk -F= '/^fingerprint=/{print $2}' ~/.oci/config | tr -d '\r\n[:space:]')"
           DERIVED_FP="$(openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem 2>/dev/null | openssl md5 -c | awk '{print $2}')"
 
           if [ "$DERIVED_FP" != "$CONFIG_FP" ]; then
             echo "Fingerprint mismatch."
             echo "Derived: $DERIVED_FP"
-            echo "Config: $CONFIG_FP"
+            echo "Config:  $CONFIG_FP"
             exit 1
           fi
 
           echo "Fingerprint matches key."
 
       - name: Verify OCI auth works
+        id: auth
         shell: bash
         run: |
           set -euo pipefail
@@ -81,13 +88,16 @@ jobs:
 
           if [ "$EXISTING_ID" = "null" ] || [ -z "$EXISTING_ID" ]; then
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "instance_id=" >> "$GITHUB_OUTPUT"
             echo "No existing instance found."
           else
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "instance_id=$EXISTING_ID" >> "$GITHUB_OUTPUT"
             echo "Existing instance found: $EXISTING_ID"
           fi
 
       - name: Launch instance
+        id: launch
         if: steps.exists.outputs.exists == 'false'
         shell: bash
         run: |
@@ -113,13 +123,70 @@ jobs:
           code=${PIPESTATUS[0]}
 
           if [ $code -eq 0 ]; then
+            echo "result=success" >> "$GITHUB_OUTPUT"
             echo "Instance launch request succeeded."
             exit 0
           fi
 
           if grep -qi "Out of host capacity" launch.log || grep -qi "out of capacity" launch.log; then
+            echo "result=capacity" >> "$GITHUB_OUTPUT"
             echo "Still out of capacity. Next scheduled run will retry."
             exit 0
           fi
 
+          echo "result=error" >> "$GITHUB_OUTPUT"
+          echo "Unexpected launch error."
           exit $code
+
+      - name: Send Telegram notification
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          TRIGGER="${{ github.event_name }}"
+          WHEN_UTC="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+
+          if [ "${{ steps.restore.outcome }}" = "failure" ]; then
+            STATUS="❌ Failed to restore OCI config/key."
+          elif [ "${{ steps.fingerprint.outcome }}" = "failure" ]; then
+            STATUS="❌ Fingerprint mismatch or bad OCI key/config."
+          elif [ "${{ steps.auth.outcome }}" = "failure" ]; then
+            STATUS="❌ OCI auth failed."
+          elif [ "${{ steps.exists.outcome }}" = "failure" ]; then
+            STATUS="❌ Failed while checking whether the instance already exists."
+          elif [ "${{ steps.exists.outputs.exists }}" = "true" ]; then
+            STATUS="✅ Instance already exists: ${{ steps.exists.outputs.instance_id }}"
+          elif [ "${{ steps.launch.outputs.result }}" = "success" ]; then
+            STATUS="✅ Instance launch request succeeded."
+          elif [ "${{ steps.launch.outputs.result }}" = "capacity" ]; then
+            STATUS="🟡 Out of host capacity. Next scheduled run will retry."
+          elif [ "${{ steps.launch.outcome }}" = "failure" ]; then
+            STATUS="❌ Unexpected OCI launch error."
+          else
+            STATUS="ℹ️ Workflow finished, but no launch status was captured."
+          fi
+
+          MSG=$(cat <<EOF
+<b>Oracle Capacity Retry</b>
+<b>Status:</b> ${STATUS}
+<b>Instance:</b> instance-20260309-0046
+<b>Region:</b> me-dubai-1
+<b>Trigger:</b> ${TRIGGER}
+<b>Run:</b> #${GITHUB_RUN_NUMBER}
+<b>Time:</b> ${WHEN_UTC}
+<b>Repo:</b> ${GITHUB_REPOSITORY}
+<b>Logs:</b> ${RUN_URL}
+EOF
+)
+
+          curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            --data-urlencode "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            --data-urlencode "text=${MSG}" \
+            --data-urlencode "parse_mode=HTML" \
+            --data-urlencode "disable_web_page_preview=true" \
+            > /tmp/tg_response.json || true
+
+          echo "Telegram notification attempted."
+          cat /tmp/tg_response.json || true
