@@ -14,13 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
-    env:
-      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
-      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
-      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-      OCI_REGION: ${{ secrets.OCI_REGION }}
-      OCI_PRIVATE_KEY_B64: ${{ secrets.OCI_PRIVATE_KEY_B64 }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,42 +29,47 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y openssl
 
-      - name: Create OCI private key file from base64
+      - name: Create OCI config from secrets
         shell: bash
         run: |
           mkdir -p ~/.oci
-          echo "$OCI_PRIVATE_KEY_B64" | base64 -d > ~/.oci/oci_api_key.pem
+
+          echo '${{ secrets.OCI_PRIVATE_KEY_B64 }}' | base64 -d > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
+
+          USER_OCID="$(printf '%s' '${{ secrets.OCI_USER_OCID }}' | tr -d '\r\n')"
+          TENANCY_OCID="$(printf '%s' '${{ secrets.OCI_TENANCY_OCID }}' | tr -d '\r\n')"
+          FINGERPRINT="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n')"
+          REGION="$(printf '%s' '${{ secrets.OCI_REGION }}' | tr -d '\r\n')"
+
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${USER_OCID}
+          fingerprint=${FINGERPRINT}
+          tenancy=${TENANCY_OCID}
+          region=${REGION}
+          key_file=/home/runner/.oci/oci_api_key.pem
+          EOF
+
+          chmod 600 ~/.oci/config
 
       - name: Verify private key matches fingerprint
         shell: bash
         run: |
-          DERIVED_FP=$(openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem 2>/dev/null | openssl md5 -c | awk '{print $2}')
-          if [ "$DERIVED_FP" != "$OCI_FINGERPRINT" ]; then
-            echo "Fingerprint mismatch between OCI_PRIVATE_KEY_B64 and OCI_FINGERPRINT"
+          EXPECTED_FP="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n')"
+          DERIVED_FP="$(openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem 2>/dev/null | openssl md5 -c | awk '{print $2}')"
+
+          if [ "$DERIVED_FP" != "$EXPECTED_FP" ]; then
+            echo "Fingerprint mismatch."
             echo "Derived: $DERIVED_FP"
+            echo "Expected: $EXPECTED_FP"
             exit 1
           fi
+
           echo "Fingerprint matches private key."
 
-      - name: Create backend config
-        shell: bash
-        run: |
-          cat > backend.hcl <<EOF
-          bucket           = "tf-state"
-          namespace        = "axz5kerlx4p6"
-          key              = "oracle-capacity/instance.tfstate"
-          tenancy_ocid     = "${OCI_TENANCY_OCID}"
-          user_ocid        = "${OCI_USER_OCID}"
-          fingerprint      = "${OCI_FINGERPRINT}"
-          private_key_path = "/home/runner/.oci/oci_api_key.pem"
-          region           = "${OCI_REGION}"
-          auth             = "APIKey"
-          EOF
-          chmod 600 backend.hcl
-
       - name: Terraform Init
-        run: terraform init -input=false -reconfigure -backend-config=backend.hcl
+        run: terraform init -input=false -reconfigure
 
       - name: Terraform Apply
         shell: bash
