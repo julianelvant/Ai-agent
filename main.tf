@@ -8,9 +8,33 @@ terraform {
   }
 }
 
+variable "tenancy_ocid" {
+  type = string
+}
+
+variable "user_ocid" {
+  type = string
+}
+
+variable "fingerprint" {
+  type = string
+}
+
+variable "private_key_path" {
+  type = string
+}
+
+variable "region" {
+  type = string
+}
+
 provider "oci" {
-  auth                = "APIKey"
-  config_file_profile = "DEFAULT"
+  auth             = "APIKey"
+  tenancy_ocid     = var.tenancy_ocid
+  user_ocid        = var.user_ocid
+  fingerprint      = var.fingerprint
+  private_key_path = var.private_key_path
+  region           = var.region
 }
 
 resource "oci_core_instance" "generated_oci_core_instance" {
