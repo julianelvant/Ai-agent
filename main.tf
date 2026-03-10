@@ -8,14 +8,17 @@ terraform {
   }
 
   backend "oci" {
-    bucket    = "tf-state"
-    namespace = "axz5kerlx4p6"
-    key       = "oracle-capacity/instance.tfstate"
+    bucket              = "tf-state"
+    namespace           = "axz5kerlx4p6"
+    key                 = "oracle-capacity/instance.tfstate"
+    auth                = "APIKey"
+    config_file_profile = "DEFAULT"
   }
 }
 
 provider "oci" {
-  auth = "APIKey"
+  auth                = "APIKey"
+  config_file_profile = "DEFAULT"
 }
 
 resource "oci_core_instance" "generated_oci_core_instance" {
