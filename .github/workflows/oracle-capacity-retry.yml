@@ -88,6 +88,7 @@ jobs:
           START_TS="$(date +%s)"
           MAX_SECONDS=$((5 * 3600 + 30 * 60))
           ATTEMPT=0
+          SLEEP_SECONDS=300
 
           send_telegram() {
             local status="$1"
@@ -115,13 +116,29 @@ jobs:
               >/dev/null 2>&1 || true
           }
 
+          classify_retryable_error() {
+            local log_file="$1"
+
+            if grep -Eqi 'Out of host capacity|out of capacity' "$log_file"; then
+              echo "capacity"
+              return 0
+            fi
+
+            if grep -Eqi 'The connection to endpoint timed out|timed out|ConnectTimeout|ReadTimeout|ConnectionError|connection was closed|Connection reset by peer|Temporary failure in name resolution|Name or service not known|ServiceUnavailable|TooManyRequests|HTTP 429|rate limit|InternalServerError|BadGateway|gateway timeout|502|503|504' "$log_file"; then
+              echo "transient"
+              return 0
+            fi
+
+            return 1
+          }
+
           while true; do
             NOW_TS="$(date +%s)"
             ELAPSED=$((NOW_TS - START_TS))
 
             if [ "$ELAPSED" -ge "$MAX_SECONDS" ]; then
               ATTEMPT=$((ATTEMPT + 1))
-              send_telegram "⏱️ Loop finished" "Reached 5h30m runtime. Scheduled workflow will start the next cycle later."
+              send_telegram "⏱️ Loop finished" "Reached 5h30m runtime. The next scheduled cycle will start later."
               exit 0
             fi
 
@@ -133,12 +150,30 @@ jobs:
               --display-name "$INSTANCE_NAME" \
               --all \
               --query "data[?\"lifecycle-state\"!='TERMINATED'].id | [0]" \
-              --raw-output)"
+              --raw-output 2>/tmp/instance_list_err.log)"
+
+            LIST_CODE=$?
+
+            if [ "$LIST_CODE" -ne 0 ]; then
+              if classify_retryable_error /tmp/instance_list_err.log >/tmp/list_class.txt; then
+                ERROR_CLASS="$(cat /tmp/list_class.txt)"
+                ERROR_TEXT="$(tail -n 20 /tmp/instance_list_err.log | tr '\n' ' ' | sed "s/\"/'/g" | cut -c1-700)"
+                send_telegram "🟠 Retryable check error" "${ERROR_CLASS}: ${ERROR_TEXT}. Sleeping 5 minutes before retry."
+                sleep "$SLEEP_SECONDS"
+                continue
+              else
+                ERROR_TEXT="$(tail -n 20 /tmp/instance_list_err.log | tr '\n' ' ' | sed "s/\"/'/g" | cut -c1-700)"
+                send_telegram "❌ Non-retryable check error" "$ERROR_TEXT"
+                exit "$LIST_CODE"
+              fi
+            fi
 
             if [ "$EXISTING_ID" != "null" ] && [ -n "$EXISTING_ID" ]; then
               send_telegram "✅ Instance already exists" "$EXISTING_ID"
               exit 0
             fi
+
+            : > launch.log
 
             oci compute instance launch \
               --availability-domain "$AVAILABILITY_DOMAIN" \
@@ -166,13 +201,20 @@ jobs:
               exit 0
             fi
 
-            if grep -qi "Out of host capacity" launch.log || grep -qi "out of capacity" launch.log; then
-              send_telegram "🟡 Out of host capacity" "Attempt ${ATTEMPT} failed due to capacity. Sleeping 5 minutes before retry."
-              sleep 300
+            if classify_retryable_error launch.log >/tmp/launch_class.txt; then
+              ERROR_CLASS="$(cat /tmp/launch_class.txt)"
+              ERROR_TEXT="$(tail -n 20 launch.log | tr '\n' ' ' | sed "s/\"/'/g" | cut -c1-700)"
+
+              if [ "$ERROR_CLASS" = "capacity" ]; then
+                send_telegram "🟡 Out of host capacity" "Attempt ${ATTEMPT} failed due to capacity. Sleeping 5 minutes before retry."
+              else
+                send_telegram "🟠 Retryable OCI error" "${ERROR_TEXT}. Sleeping 5 minutes before retry."
+              fi
+
+              sleep "$SLEEP_SECONDS"
               continue
             fi
 
-            ERROR_TEXT="$(tail -n 20 launch.log | tr '\n' ' ' | sed 's/"/'\''/g' | cut -c1-700)"
-            send_telegram "❌ Unexpected OCI error" "$ERROR_TEXT"
+            ERROR_TEXT="$(tail -n 20 launch.log | tr '\n' ' ' | sed "s/\"/'/g" | cut -c1-700)"
+            send_telegram "❌ Non-retryable OCI error" "$ERROR_TEXT"
             exit "$code"
-          done
