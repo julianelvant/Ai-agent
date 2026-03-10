@@ -3,7 +3,7 @@ name: Oracle capacity retry
 on:
   workflow_dispatch:
   schedule:
-    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
+    - cron: "2 */5 * * *"
 
 concurrency:
   group: oracle-capacity-retry
@@ -12,14 +12,13 @@ concurrency:
 jobs:
   retry-launch:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 330
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install OCI CLI and tools
-        id: install
         shell: bash
         run: |
           set -euo pipefail
@@ -29,7 +28,6 @@ jobs:
           sudo apt-get install -y openssl curl jq
 
       - name: Restore working OCI config and key
-        id: restore
         shell: bash
         run: |
           set -euo pipefail
@@ -45,7 +43,6 @@ jobs:
           echo "OCI_CLI_CONFIG_FILE=/home/runner/.oci/config" >> "$GITHUB_ENV"
 
       - name: Verify key matches fingerprint from config
-        id: fingerprint
         shell: bash
         run: |
           set -euo pipefail
@@ -63,127 +60,119 @@ jobs:
           echo "Fingerprint matches key."
 
       - name: Verify OCI auth works
-        id: auth
         shell: bash
         run: |
           set -euo pipefail
           oci os ns get
           oci os bucket get -ns axz5kerlx4p6 -bn tf-state
 
-      - name: Check if instance already exists
-        id: exists
+      - name: Retry launch loop for 5h30m
         shell: bash
-        run: |
-          set -euo pipefail
-
-          COMPARTMENT_ID="$(awk -F= '/^tenancy=/{print $2}' ~/.oci/config | tr -d '\r\n[:space:]')"
-
-          EXISTING_ID="$(oci compute instance list \
-            --compartment-id "$COMPARTMENT_ID" \
-            --availability-domain "cHOj:ME-DUBAI-1-AD-1" \
-            --display-name "instance-20260309-0046" \
-            --all \
-            --query "data[?\"lifecycle-state\"!='TERMINATED'].id | [0]" \
-            --raw-output)"
-
-          if [ "$EXISTING_ID" = "null" ] || [ -z "$EXISTING_ID" ]; then
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "instance_id=" >> "$GITHUB_OUTPUT"
-            echo "No existing instance found."
-          else
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "instance_id=$EXISTING_ID" >> "$GITHUB_OUTPUT"
-            echo "Existing instance found: $EXISTING_ID"
-          fi
-
-      - name: Launch instance
-        id: launch
-        if: steps.exists.outputs.exists == 'false'
-        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set +e
 
+          INSTANCE_NAME="instance-20260309-0046"
+          AVAILABILITY_DOMAIN="cHOj:ME-DUBAI-1-AD-1"
+          SUBNET_ID="ocid1.subnet.oc1.me-dubai-1.aaaaaaaav6dpwb2wgxvjctydrzbo46jspe6hxc5nnvuxcfal63uu2dgmznda"
+          IMAGE_ID="ocid1.image.oc1.me-dubai-1.aaaaaaaab352mbi4vcyymzs4ccln576k34khc357fk2hlaqx3cuzjclgkoea"
+          SHAPE="VM.Standard.A1.Flex"
+          SHAPE_CONFIG='{"ocpus": 2, "memoryInGBs": 12}'
+          SSH_KEYS='{"ssh_authorized_keys":"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDQWOd3NbeBfSaoMI+zg79jWnZc9jaq+xBvcYrzZfcI81iyffF60H8Qp5f0TnsxyPNGTcrVmnSU8ZDeisQg3StGIOo4mn0jz2pg7zmfWoqGcr9Bup+2GVM0x0aKDtY1EV0QLev9vlzZn6HkM8EaKezLlxN6R41wuUyaDz0U28qFS1EPwh+YvZn5fH60PRpuJaUKd3ImtouEz6dpqFvyPNdaImFAw3BvMa0JTCa71OorsDdKqSVAjcseBGciF5DSgEF5mHy7oT4TsijFeo8ys7Wrnh4uJbMSDx9rTykHLap21tluZHBA4AOJHv+i16NsNP+Y338Gc7npGnyazdUfv6FR ssh-key-2026-03-08"}'
+
           COMPARTMENT_ID="$(awk -F= '/^tenancy=/{print $2}' ~/.oci/config | tr -d '\r\n[:space:]')"
-
-          oci compute instance launch \
-            --availability-domain "cHOj:ME-DUBAI-1-AD-1" \
-            --compartment-id "$COMPARTMENT_ID" \
-            --subnet-id "ocid1.subnet.oc1.me-dubai-1.aaaaaaaav6dpwb2wgxvjctydrzbo46jspe6hxc5nnvuxcfal63uu2dgmznda" \
-            --display-name "instance-20260309-0046" \
-            --shape "VM.Standard.A1.Flex" \
-            --shape-config '{"ocpus": 2, "memoryInGBs": 12}' \
-            --image-id "ocid1.image.oc1.me-dubai-1.aaaaaaaab352mbi4vcyymzs4ccln576k34khc357fk2hlaqx3cuzjclgkoea" \
-            --assign-public-ip true \
-            --assign-private-dns-record true \
-            --availability-config '{"recoveryAction":"RESTORE_INSTANCE"}' \
-            --instance-options '{"areLegacyImdsEndpointsDisabled": false}' \
-            --metadata '{"ssh_authorized_keys":"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDQWOd3NbeBfSaoMI+zg79jWnZc9jaq+xBvcYrzZfcI81iyffF60H8Qp5f0TnsxyPNGTcrVmnSU8ZDeisQg3StGIOo4mn0jz2pg7zmfWoqGcr9Bup+2GVM0x0aKDtY1EV0QLev9vlzZn6HkM8EaKezLlxN6R41wuUyaDz0U28qFS1EPwh+YvZn5fH60PRpuJaUKd3ImtouEz6dpqFvyPNdaImFAw3BvMa0JTCa71OorsDdKqSVAjcseBGciF5DSgEF5mHy7oT4TsijFeo8ys7Wrnh4uJbMSDx9rTykHLap21tluZHBA4AOJHv+i16NsNP+Y338Gc7npGnyazdUfv6FR ssh-key-2026-03-08"}' \
-            2>&1 | tee launch.log
-
-          code=${PIPESTATUS[0]}
-
-          if [ $code -eq 0 ]; then
-            echo "result=success" >> "$GITHUB_OUTPUT"
-            echo "Instance launch request succeeded."
-            exit 0
-          fi
-
-          if grep -qi "Out of host capacity" launch.log || grep -qi "out of capacity" launch.log; then
-            echo "result=capacity" >> "$GITHUB_OUTPUT"
-            echo "Still out of capacity. Next scheduled run will retry."
-            exit 0
-          fi
-
-          echo "result=error" >> "$GITHUB_OUTPUT"
-          echo "Unexpected launch error."
-          exit $code
-
-      - name: Send Telegram notification
-        if: always()
-        shell: bash
-        run: |
-          set +e
-
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           TRIGGER="${{ github.event_name }}"
-          WHEN_UTC="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          START_TS="$(date +%s)"
+          MAX_SECONDS=$((5 * 3600 + 30 * 60))
+          ATTEMPT=0
 
-          if [ "${{ steps.restore.outcome }}" = "failure" ]; then
-            STATUS="❌ Failed to restore OCI config/key."
-          elif [ "${{ steps.fingerprint.outcome }}" = "failure" ]; then
-            STATUS="❌ Fingerprint mismatch or bad OCI key/config."
-          elif [ "${{ steps.auth.outcome }}" = "failure" ]; then
-            STATUS="❌ OCI auth failed."
-          elif [ "${{ steps.exists.outcome }}" = "failure" ]; then
-            STATUS="❌ Failed while checking whether the instance already exists."
-          elif [ "${{ steps.exists.outputs.exists }}" = "true" ]; then
-            STATUS="✅ Instance already exists: ${{ steps.exists.outputs.instance_id }}"
-          elif [ "${{ steps.launch.outputs.result }}" = "success" ]; then
-            STATUS="✅ Instance launch request succeeded."
-          elif [ "${{ steps.launch.outputs.result }}" = "capacity" ]; then
-            STATUS="🟡 Out of host capacity. Next scheduled run will retry."
-          elif [ "${{ steps.launch.outcome }}" = "failure" ]; then
-            STATUS="❌ Unexpected OCI launch error."
-          else
-            STATUS="ℹ️ Workflow finished, but no launch status was captured."
-          fi
+          send_telegram() {
+            local status="$1"
+            local details="$2"
+            local when_utc
+            when_utc="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
-          MSG="<b>Oracle Capacity Retry</b>%0A"
-          MSG="${MSG}<b>Status:</b> ${STATUS}%0A"
-          MSG="${MSG}<b>Instance:</b> instance-20260309-0046%0A"
-          MSG="${MSG}<b>Region:</b> me-dubai-1%0A"
-          MSG="${MSG}<b>Trigger:</b> ${TRIGGER}%0A"
-          MSG="${MSG}<b>Run:</b> #${GITHUB_RUN_NUMBER}%0A"
-          MSG="${MSG}<b>Time:</b> ${WHEN_UTC}%0A"
-          MSG="${MSG}<b>Repo:</b> ${GITHUB_REPOSITORY}%0A"
-          MSG="${MSG}<b>Logs:</b> ${RUN_URL}"
+            local msg
+            msg="<b>Oracle Capacity Retry</b>%0A"
+            msg="${msg}<b>Status:</b> ${status}%0A"
+            msg="${msg}<b>Details:</b> ${details}%0A"
+            msg="${msg}<b>Instance:</b> ${INSTANCE_NAME}%0A"
+            msg="${msg}<b>Region:</b> me-dubai-1%0A"
+            msg="${msg}<b>Trigger:</b> ${TRIGGER}%0A"
+            msg="${msg}<b>Run:</b> #${GITHUB_RUN_NUMBER}%0A"
+            msg="${msg}<b>Attempt:</b> ${ATTEMPT}%0A"
+            msg="${msg}<b>Time:</b> ${when_utc}%0A"
+            msg="${msg}<b>Logs:</b> ${RUN_URL}"
 
-          curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-            --data "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-            --data "text=${MSG}" \
-            --data "parse_mode=HTML" \
-            --data "disable_web_page_preview=true" \
-            > /tmp/tg_response.json || true
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data "text=${msg}" \
+              --data "parse_mode=HTML" \
+              --data "disable_web_page_preview=true" \
+              >/dev/null 2>&1 || true
+          }
 
-          echo "Telegram notification attempted."
-          cat /tmp/tg_response.json || true
+          while true; do
+            NOW_TS="$(date +%s)"
+            ELAPSED=$((NOW_TS - START_TS))
+
+            if [ "$ELAPSED" -ge "$MAX_SECONDS" ]; then
+              ATTEMPT=$((ATTEMPT + 1))
+              send_telegram "⏱️ Loop finished" "Reached 5h30m runtime. Scheduled workflow will start the next cycle later."
+              exit 0
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+
+            EXISTING_ID="$(oci compute instance list \
+              --compartment-id "$COMPARTMENT_ID" \
+              --availability-domain "$AVAILABILITY_DOMAIN" \
+              --display-name "$INSTANCE_NAME" \
+              --all \
+              --query "data[?\"lifecycle-state\"!='TERMINATED'].id | [0]" \
+              --raw-output)"
+
+            if [ "$EXISTING_ID" != "null" ] && [ -n "$EXISTING_ID" ]; then
+              send_telegram "✅ Instance already exists" "$EXISTING_ID"
+              exit 0
+            fi
+
+            oci compute instance launch \
+              --availability-domain "$AVAILABILITY_DOMAIN" \
+              --compartment-id "$COMPARTMENT_ID" \
+              --subnet-id "$SUBNET_ID" \
+              --display-name "$INSTANCE_NAME" \
+              --shape "$SHAPE" \
+              --shape-config "$SHAPE_CONFIG" \
+              --image-id "$IMAGE_ID" \
+              --assign-public-ip true \
+              --assign-private-dns-record true \
+              --availability-config '{"recoveryAction":"RESTORE_INSTANCE"}' \
+              --instance-options '{"areLegacyImdsEndpointsDisabled": false}' \
+              --metadata "$SSH_KEYS" \
+              2>&1 | tee launch.log
+
+            code=${PIPESTATUS[0]}
+
+            if [ "$code" -eq 0 ]; then
+              NEW_ID="$(grep -o 'ocid1\.instance\.[^" ]*' launch.log | head -n 1)"
+              if [ -z "$NEW_ID" ]; then
+                NEW_ID="Launch request succeeded."
+              fi
+              send_telegram "✅ Launch succeeded" "$NEW_ID"
+              exit 0
+            fi
+
+            if grep -qi "Out of host capacity" launch.log || grep -qi "out of capacity" launch.log; then
+              send_telegram "🟡 Out of host capacity" "Attempt ${ATTEMPT} failed due to capacity. Sleeping 5 minutes before retry."
+              sleep 300
+              continue
+            fi
+
+            ERROR_TEXT="$(tail -n 20 launch.log | tr '\n' ' ' | sed 's/"/'\''/g' | cut -c1-700)"
+            send_telegram "❌ Unexpected OCI error" "$ERROR_TEXT"
+            exit "$code"
+          done
