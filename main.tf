@@ -6,14 +6,6 @@ terraform {
       source = "oracle/oci"
     }
   }
-
-  backend "oci" {
-    bucket              = "tf-state"
-    namespace           = "axz5kerlx4p6"
-    key                 = "oracle-capacity/instance.tfstate"
-    auth                = "APIKey"
-    config_file_profile = "DEFAULT"
-  }
 }
 
 provider "oci" {
