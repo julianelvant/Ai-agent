@@ -18,7 +18,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install OCI CLI
+      - name: Install OCI CLI and OpenSSL
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install oci-cli
@@ -34,6 +34,8 @@ jobs:
           chmod 600 ~/.oci/oci_api_key.pem
 
           echo '${{ secrets.OCI_CONFIG_B64 }}' | base64 -d > ~/.oci/config
+
+          sed -i 's|^key_file=.*|key_file=/home/runner/.oci/oci_api_key.pem|' ~/.oci/config
           chmod 600 ~/.oci/config
 
           echo "OCI_CLI_CONFIG_FILE=/home/runner/.oci/config" >> "$GITHUB_ENV"
