@@ -19,7 +19,7 @@ jobs:
       OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
       OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
       OCI_REGION: ${{ secrets.OCI_REGION }}
-      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_PRIVATE_KEY_B64: ${{ secrets.OCI_PRIVATE_KEY_B64 }}
 
     steps:
       - name: Checkout
@@ -31,14 +31,28 @@ jobs:
           terraform_version: 1.14.6
           terraform_wrapper: false
 
-      - name: Create OCI private key file
+      - name: Ensure OpenSSL is available
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssl
+
+      - name: Create OCI private key file from base64
         shell: bash
         run: |
           mkdir -p ~/.oci
-          cat > ~/.oci/oci_api_key.pem <<'EOF'
-          ${{ secrets.OCI_PRIVATE_KEY }}
-          EOF
+          echo "$OCI_PRIVATE_KEY_B64" | base64 -d > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
+
+      - name: Verify private key matches fingerprint
+        shell: bash
+        run: |
+          DERIVED_FP=$(openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem 2>/dev/null | openssl md5 -c | awk '{print $2}')
+          if [ "$DERIVED_FP" != "$OCI_FINGERPRINT" ]; then
+            echo "Fingerprint mismatch between OCI_PRIVATE_KEY_B64 and OCI_FINGERPRINT"
+            echo "Derived: $DERIVED_FP"
+            exit 1
+          fi
+          echo "Fingerprint matches private key."
 
       - name: Create backend config
         shell: bash
@@ -55,16 +69,6 @@ jobs:
           auth             = "APIKey"
           EOF
           chmod 600 backend.hcl
-
-      - name: Debug OCI secret presence
-        shell: bash
-        run: |
-          [ -n "$OCI_TENANCY_OCID" ] && echo "TENANCY set" || (echo "TENANCY missing" && exit 1)
-          [ -n "$OCI_USER_OCID" ] && echo "USER set" || (echo "USER missing" && exit 1)
-          [ -n "$OCI_FINGERPRINT" ] && echo "FINGERPRINT set" || (echo "FINGERPRINT missing" && exit 1)
-          [ -n "$OCI_REGION" ] && echo "REGION set" || (echo "REGION missing" && exit 1)
-          [ -f ~/.oci/oci_api_key.pem ] && echo "OCI key file created" || (echo "OCI key file missing" && exit 1)
-          [ -f backend.hcl ] && echo "Backend config created" || (echo "Backend config missing" && exit 1)
 
       - name: Terraform Init
         run: terraform init -input=false -reconfigure -backend-config=backend.hcl
