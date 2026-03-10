@@ -11,8 +11,6 @@ terraform {
     bucket    = "tf-state"
     namespace = "axz5kerlx4p6"
     key       = "oracle-capacity/instance.tfstate"
-    region    = "me-dubai-1"
-    auth      = "APIKey"
   }
 }
 
