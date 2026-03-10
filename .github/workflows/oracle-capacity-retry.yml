@@ -10,101 +10,100 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  retry-apply:
+  retry-launch:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.14.6
-          terraform_wrapper: false
-
-      - name: Ensure OpenSSL is available
+      - name: Install OCI CLI
         run: |
-          sudo apt-get update
-          sudo apt-get install -y openssl
+          python3 -m pip install --upgrade pip
+          python3 -m pip install oci-cli
 
-      - name: Create OCI private key from base64 secret
+      - name: Create OCI config from secrets
         shell: bash
         run: |
           mkdir -p ~/.oci
+
           echo '${{ secrets.OCI_PRIVATE_KEY_B64 }}' | base64 -d > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
 
-      - name: Verify private key matches fingerprint
+          USER_OCID="$(printf '%s' '${{ secrets.OCI_USER_OCID }}' | tr -d '\r\n')"
+          TENANCY_OCID="$(printf '%s' '${{ secrets.OCI_TENANCY_OCID }}' | tr -d '\r\n')"
+          FINGERPRINT="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n')"
+          REGION="$(printf '%s' '${{ secrets.OCI_REGION }}' | tr -d '\r\n')"
+
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${USER_OCID}
+          fingerprint=${FINGERPRINT}
+          tenancy=${TENANCY_OCID}
+          region=${REGION}
+          key_file=/home/runner/.oci/oci_api_key.pem
+          EOF
+
+          chmod 600 ~/.oci/config
+
+      - name: Verify OCI auth works
+        run: |
+          oci os ns get
+          oci os bucket get -ns axz5kerlx4p6 -bn tf-state
+
+      - name: Check if instance already exists
+        id: exists
         shell: bash
         run: |
-          EXPECTED_FP="$(printf '%s' '${{ secrets.OCI_FINGERPRINT }}' | tr -d '\r\n')"
-          DERIVED_FP="$(openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem 2>/dev/null | openssl md5 -c | awk '{print $2}')"
+          EXISTING_ID=$(
+            oci compute instance list \
+              --compartment-id "${{ secrets.OCI_TENANCY_OCID }}" \
+              --availability-domain "cHOj:ME-DUBAI-1-AD-1" \
+              --display-name "instance-20260309-0046" \
+              --all --output json | \
+            python3 -c "import sys, json; d=json.load(sys.stdin).get('data', []); print(next((x['id'] for x in d if x.get('lifecycle-state') != 'TERMINATED'), ''))"
+          )
 
-          if [ "$DERIVED_FP" != "$EXPECTED_FP" ]; then
-            echo "Fingerprint mismatch."
-            echo "Derived: $DERIVED_FP"
-            echo "Expected: $EXPECTED_FP"
-            exit 1
+          if [ -n "$EXISTING_ID" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Existing instance found: $EXISTING_ID"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No existing instance found."
           fi
 
-          echo "Fingerprint matches private key."
-
-      - name: Terraform Init
-        env:
-          TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
-          TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
-          TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
-          TF_VAR_private_key_path: /home/runner/.oci/oci_api_key.pem
-          TF_VAR_region: ${{ secrets.OCI_REGION }}
-        run: terraform init -input=false
-
-      - name: Terraform Apply
-        id: apply
+      - name: Launch instance
+        if: steps.exists.outputs.exists == 'false'
         shell: bash
-        env:
-          TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
-          TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
-          TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
-          TF_VAR_private_key_path: /home/runner/.oci/oci_api_key.pem
-          TF_VAR_region: ${{ secrets.OCI_REGION }}
         run: |
           set +e
-          terraform apply -auto-approve -input=false 2>&1 | tee apply.log
+
+          oci compute instance launch \
+            --availability-domain "cHOj:ME-DUBAI-1-AD-1" \
+            --compartment-id "${{ secrets.OCI_TENANCY_OCID }}" \
+            --subnet-id "ocid1.subnet.oc1.me-dubai-1.aaaaaaaav6dpwb2wgxvjctydrzbo46jspe6hxc5nnvuxcfal63uu2dgmznda" \
+            --display-name "instance-20260309-0046" \
+            --shape "VM.Standard.A1.Flex" \
+            --shape-config '{"ocpus": 2, "memoryInGBs": 12}' \
+            --image-id "ocid1.image.oc1.me-dubai-1.aaaaaaaab352mbi4vcyymzs4ccln576k34khc357fk2hlaqx3cuzjclgkoea" \
+            --assign-public-ip true \
+            --assign-private-dns-record true \
+            --availability-config '{"recoveryAction":"RESTORE_INSTANCE"}' \
+            --instance-options '{"areLegacyImdsEndpointsDisabled": false}' \
+            --metadata '{"ssh_authorized_keys":"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDQWOd3NbeBfSaoMI+zg79jWnZc9jaq+xBvcYrzZfcI81iyffF60H8Qp5f0TnsxyPNGTcrVmnSU8ZDeisQg3StGIOo4mn0jz2pg7zmfWoqGcr9Bup+2GVM0x0aKDtY1EV0QLev9vlzZn6HkM8EaKezLlxN6R41wuUyaDz0U28qFS1EPwh+YvZn5fH60PRpuJaUKd3ImtouEz6dpqFvyPNdaImFAw3BvMa0JTCa71OorsDdKqSVAjcseBGciF5DSgEF5mHy7oT4TsijFeo8ys7Wrnh4uJbMSDx9rTykHLap21tluZHBA4AOJHv+i16NsNP+Y338Gc7npGnyazdUfv6FR ssh-key-2026-03-08"}' \
+            2>&1 | tee launch.log
+
           code=${PIPESTATUS[0]}
 
           if [ $code -eq 0 ]; then
-            echo "status=success" >> $GITHUB_OUTPUT
+            echo "Instance launch request succeeded."
             exit 0
           fi
 
-          if grep -q "Out of host capacity" apply.log; then
-            echo "status=capacity" >> $GITHUB_OUTPUT
+          if grep -q "Out of host capacity" launch.log; then
             echo "Still out of capacity. Next scheduled run will retry."
             exit 0
           fi
 
-          echo "status=failed" >> $GITHUB_OUTPUT
           exit $code
-
-      - name: Commit Terraform state
-        if: steps.apply.outputs.status == 'success'
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add terraform.tfstate terraform.tfstate.backup .terraform.lock.hcl || true
-
-          if git diff --cached --quiet; then
-            echo "No state changes to commit."
-            exit 0
-          fi
-
-          git commit -m "Update terraform state after successful OCI apply"
-          git push
