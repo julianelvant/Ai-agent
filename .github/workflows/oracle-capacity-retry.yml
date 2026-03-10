@@ -86,7 +86,7 @@ jobs:
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           TRIGGER="${{ github.event_name }}"
           START_TS="$(date +%s)"
-          MAX_SECONDS=$((5 * 3600 + 30 * 60))
+          MAX_SECONDS=19800
           ATTEMPT=0
           SLEEP_SECONDS=300
 
@@ -94,9 +94,9 @@ jobs:
             local status="$1"
             local details="$2"
             local when_utc
-            when_utc="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-
             local msg
+
+            when_utc="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             msg="<b>Oracle Capacity Retry</b>%0A"
             msg="${msg}<b>Status:</b> ${status}%0A"
             msg="${msg}<b>Details:</b> ${details}%0A"
@@ -116,20 +116,12 @@ jobs:
               >/dev/null 2>&1 || true
           }
 
-          classify_retryable_error() {
-            local log_file="$1"
+          is_retryable_log() {
+            local file="$1"
 
-            if grep -Eqi 'Out of host capacity|out of capacity' "$log_file"; then
-              echo "capacity"
-              return 0
-            fi
-
-            if grep -Eqi 'The connection to endpoint timed out|timed out|ConnectTimeout|ReadTimeout|ConnectionError|connection was closed|Connection reset by peer|Temporary failure in name resolution|Name or service not known|ServiceUnavailable|TooManyRequests|HTTP 429|rate limit|InternalServerError|BadGateway|gateway timeout|502|503|504' "$log_file"; then
-              echo "transient"
-              return 0
-            fi
-
-            return 1
+            grep -Eqi \
+              'Out of host capacity|out of capacity|The connection to endpoint timed out|timed out|ConnectTimeout|ReadTimeout|ConnectionError|connection was closed|Connection reset by peer|Temporary failure in name resolution|Name or service not known|ServiceUnavailable|TooManyRequests|rate limit|InternalServerError|BadGateway|gateway timeout' \
+              "$file"
           }
 
           while true; do
@@ -144,29 +136,30 @@ jobs:
 
             ATTEMPT=$((ATTEMPT + 1))
 
-            EXISTING_ID="$(oci compute instance list \
+            oci compute instance list \
               --compartment-id "$COMPARTMENT_ID" \
               --availability-domain "$AVAILABILITY_DOMAIN" \
               --display-name "$INSTANCE_NAME" \
               --all \
               --query "data[?\"lifecycle-state\"!='TERMINATED'].id | [0]" \
-              --raw-output 2>/tmp/instance_list_err.log)"
+              --raw-output > instance_check.out 2> instance_check.err
 
             LIST_CODE=$?
 
             if [ "$LIST_CODE" -ne 0 ]; then
-              if classify_retryable_error /tmp/instance_list_err.log >/tmp/list_class.txt; then
-                ERROR_CLASS="$(cat /tmp/list_class.txt)"
-                ERROR_TEXT="$(tail -n 20 /tmp/instance_list_err.log | tr '\n' ' ' | sed "s/\"/'/g" | cut -c1-700)"
-                send_telegram "🟠 Retryable check error" "${ERROR_CLASS}: ${ERROR_TEXT}. Sleeping 5 minutes before retry."
+              if is_retryable_log instance_check.err; then
+                ERROR_TEXT="$(tail -n 20 instance_check.err | tr '\n' ' ' | cut -c1-700)"
+                send_telegram "🟠 Retryable check error" "${ERROR_TEXT}. Sleeping 5 minutes before retry."
                 sleep "$SLEEP_SECONDS"
                 continue
               else
-                ERROR_TEXT="$(tail -n 20 /tmp/instance_list_err.log | tr '\n' ' ' | sed "s/\"/'/g" | cut -c1-700)"
+                ERROR_TEXT="$(tail -n 20 instance_check.err | tr '\n' ' ' | cut -c1-700)"
                 send_telegram "❌ Non-retryable check error" "$ERROR_TEXT"
                 exit "$LIST_CODE"
               fi
             fi
+
+            EXISTING_ID="$(cat instance_check.out | tr -d '\r\n')"
 
             if [ "$EXISTING_ID" != "null" ] && [ -n "$EXISTING_ID" ]; then
               send_telegram "✅ Instance already exists" "$EXISTING_ID"
@@ -190,9 +183,9 @@ jobs:
               --metadata "$SSH_KEYS" \
               2>&1 | tee launch.log
 
-            code=${PIPESTATUS[0]}
+            LAUNCH_CODE=${PIPESTATUS[0]}
 
-            if [ "$code" -eq 0 ]; then
+            if [ "$LAUNCH_CODE" -eq 0 ]; then
               NEW_ID="$(grep -o 'ocid1\.instance\.[^" ]*' launch.log | head -n 1)"
               if [ -z "$NEW_ID" ]; then
                 NEW_ID="Launch request succeeded."
@@ -201,20 +194,18 @@ jobs:
               exit 0
             fi
 
-            if classify_retryable_error launch.log >/tmp/launch_class.txt; then
-              ERROR_CLASS="$(cat /tmp/launch_class.txt)"
-              ERROR_TEXT="$(tail -n 20 launch.log | tr '\n' ' ' | sed "s/\"/'/g" | cut -c1-700)"
-
-              if [ "$ERROR_CLASS" = "capacity" ]; then
+            if is_retryable_log launch.log; then
+              if grep -Eqi 'Out of host capacity|out of capacity' launch.log; then
                 send_telegram "🟡 Out of host capacity" "Attempt ${ATTEMPT} failed due to capacity. Sleeping 5 minutes before retry."
               else
+                ERROR_TEXT="$(tail -n 20 launch.log | tr '\n' ' ' | cut -c1-700)"
                 send_telegram "🟠 Retryable OCI error" "${ERROR_TEXT}. Sleeping 5 minutes before retry."
               fi
-
               sleep "$SLEEP_SECONDS"
               continue
             fi
 
-            ERROR_TEXT="$(tail -n 20 launch.log | tr '\n' ' ' | sed "s/\"/'/g" | cut -c1-700)"
+            ERROR_TEXT="$(tail -n 20 launch.log | tr '\n' ' ' | cut -c1-700)"
             send_telegram "❌ Non-retryable OCI error" "$ERROR_TEXT"
-            exit "$code"
+            exit "$LAUNCH_CODE"
+          done
