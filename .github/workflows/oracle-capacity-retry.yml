@@ -31,6 +31,35 @@ jobs:
           terraform_version: 1.14.6
           terraform_wrapper: false
 
+      - name: Create OCI config
+        shell: bash
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=/home/runner/.oci/oci_api_key.pem
+          EOF
+
+          chmod 600 ~/.oci/config
+
+      - name: Debug OCI secret presence
+        shell: bash
+        run: |
+          [ -n "$OCI_TENANCY_OCID" ] && echo "TENANCY set" || (echo "TENANCY missing" && exit 1)
+          [ -n "$OCI_USER_OCID" ] && echo "USER set" || (echo "USER missing" && exit 1)
+          [ -n "$OCI_FINGERPRINT" ] && echo "FINGERPRINT set" || (echo "FINGERPRINT missing" && exit 1)
+          [ -n "$OCI_REGION" ] && echo "REGION set" || (echo "REGION missing" && exit 1)
+          [ -n "$OCI_PRIVATE_KEY" ] && echo "PRIVATE KEY set" || (echo "PRIVATE KEY missing" && exit 1)
+          [ -f ~/.oci/config ] && echo "OCI config created" || (echo "OCI config missing" && exit 1)
+          [ -f ~/.oci/oci_api_key.pem ] && echo "OCI key file created" || (echo "OCI key file missing" && exit 1)
+
       - name: Terraform Init
         run: terraform init -input=false -reconfigure
 
