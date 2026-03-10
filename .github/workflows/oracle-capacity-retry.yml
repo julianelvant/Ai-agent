@@ -56,7 +56,7 @@ jobs:
           if [ "$DERIVED_FP" != "$CONFIG_FP" ]; then
             echo "Fingerprint mismatch."
             echo "Derived: $DERIVED_FP"
-            echo "Config:  $CONFIG_FP"
+            echo "Config: $CONFIG_FP"
             exit 1
           fi
 
@@ -168,24 +168,21 @@ jobs:
             STATUS="ℹ️ Workflow finished, but no launch status was captured."
           fi
 
-          MSG=$(cat <<EOF
-<b>Oracle Capacity Retry</b>
-<b>Status:</b> ${STATUS}
-<b>Instance:</b> instance-20260309-0046
-<b>Region:</b> me-dubai-1
-<b>Trigger:</b> ${TRIGGER}
-<b>Run:</b> #${GITHUB_RUN_NUMBER}
-<b>Time:</b> ${WHEN_UTC}
-<b>Repo:</b> ${GITHUB_REPOSITORY}
-<b>Logs:</b> ${RUN_URL}
-EOF
-)
+          MSG="<b>Oracle Capacity Retry</b>%0A"
+          MSG="${MSG}<b>Status:</b> ${STATUS}%0A"
+          MSG="${MSG}<b>Instance:</b> instance-20260309-0046%0A"
+          MSG="${MSG}<b>Region:</b> me-dubai-1%0A"
+          MSG="${MSG}<b>Trigger:</b> ${TRIGGER}%0A"
+          MSG="${MSG}<b>Run:</b> #${GITHUB_RUN_NUMBER}%0A"
+          MSG="${MSG}<b>Time:</b> ${WHEN_UTC}%0A"
+          MSG="${MSG}<b>Repo:</b> ${GITHUB_REPOSITORY}%0A"
+          MSG="${MSG}<b>Logs:</b> ${RUN_URL}"
 
           curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-            --data-urlencode "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-            --data-urlencode "text=${MSG}" \
-            --data-urlencode "parse_mode=HTML" \
-            --data-urlencode "disable_web_page_preview=true" \
+            --data "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            --data "text=${MSG}" \
+            --data "parse_mode=HTML" \
+            --data "disable_web_page_preview=true" \
             > /tmp/tg_response.json || true
 
           echo "Telegram notification attempted."
